@@ -1,0 +1,9 @@
+# Ignore Python compiled files.
+*.pyc
+__pycache__
+
+# Ignore vim swap files.
+.*.swp
+
+# Ignore the virtualenv files.
+venv
