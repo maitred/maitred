@@ -1,37 +1,64 @@
 import re
+import sys
+import ast
 import time
+import importlib
 
 from .. import plumbing
 
-EAR_CMD = ['python', 'maitred/prototype/ircear.py']
-APP_CFG = [
-    ('ping', ['python', 'maitred/prototype/pongapp.py']),
-    ('what', ['python', 'maitred/prototype/whatapp.py']),
-]
-
 def main():
+    if len(sys.argv) == 1:
+        config = {'ears': []}
+    elif len(sys.argv) == 2:
+        with open(sys.argv[1]) as configfile:
+            config = ast.literal_eval(configfile.read())
+    else:
+        print('USAGE: {} [configfile]'.format(sys.argv[0]))
+
     pm = plumbing.ProcessManager()
 
-    ear = pm.spawn(EAR_CMD)
+    ears = {}
+    apps = {}
+    vocabs = {}
+    auths = {}
+    for ear_config in config['ears']:
+        ear_module = importlib.import_module(ear_config['module'])
+        EarClass = getattr(ear_module, ear_config['class'])
 
-    apps = [pm.spawn(cmd) for vocab, cmd in APP_CFG]
-    vocabs = [re.compile(vocab) for vocab, cmd in APP_CFG]
+        ear = EarClass(ear_config['settings'])
+        ear.connect()
+
+        ear_id = ear_config['id']
+        ears[ear_id] = ear
+
+        apps[ear_id] = [pm.spawn(app['argv']) for app in ear_config['apps']]
+        vocabs[ear_id] = [re.compile(app['vocab']) for app in ear_config['apps']]
+        auths[ear_id] = [app['users'] if 'users' in app else None
+                for app in ear_config['apps']]
 
     while True:
         pm.sync()
 
-        ear_message = ear.readline()
-        if ear_message:
-            print('Got message from ear: {}'.format(repr(ear_message)))
-            for vocab, app in zip(vocabs, apps):
-                if vocab.match(ear_message):
-                    print('Routing message to app [{}]'.format(vocab.pattern))
-                    app.write(ear_message)
+        for ear_id, ear in ears.items():
+            ear.sync()
+            for message in ear:
+                print('Got message from {}: {}'.format(message.user,
+                    repr(message.text)))
+                for vocab, app, auth in zip(vocabs[ear_id], apps[ear_id],
+                        auths[ear_id]):
+                    if vocab.match(message.text):
+                        print('Routing message to app [{}]'.format(vocab.pattern))
+                        if (auth is None or message.user in auth):
+                            app.write(message.text + '\n')
+                            break
+                        else:
+                            print('User {} not authorized for this '
+                                  'app.'.format(message.user))
 
-        for app in apps:
-            app_message = app.readline()
-            if app_message:
-                print('Got message from app: {}'.format(repr(app_message)))
-                ear.write(app_message)
+            for app in apps[ear_id]:
+                app_message = app.readline()
+                if app_message:
+                    print('Got message from app: {}'.format(repr(app_message)))
+                    ear.write(app_message)
 
         time.sleep(0.1)
